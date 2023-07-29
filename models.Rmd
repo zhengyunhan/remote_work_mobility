@@ -1,0 +1,680 @@
+---
+title: "01models"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(miceadds)
+library(lmtest)
+library(multiwayvcov)
+library(modelsummary)
+library(fabricatr)
+library(mediation)
+library(ivpack)
+library(tidyr)
+library(lubridate)
+library(dplyr)
+library(stargazer)
+library(plm)
+library(lfe)
+library(ggplot2)
+library(forcats)
+library(scales)
+library(ivmodel)
+```
+
+# 1. VMT model
+# 1.1 load data
+```{r}
+begin_date='2020-03-01'
+end_date='2022-11-01'
+data_vmt0<-read.csv('data_processed/data_vmt.csv')
+data_vmt0$date<-as.Date(data_vmt0$date)
+data_vmt0$month<-month(data_vmt0$date)
+data_vmt0$year<-year(data_vmt0$date)
+data_vmt<-data_vmt0%>%
+  filter((date>as.Date(begin_date))&(date<as.Date(end_date)))
+data_vmt
+```
+
+
+
+# 1.2 fixed-effects regression
+```{r}
+ols_vmt<-lm(vmt_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt)
+summary(ols_vmt)$r.square
+rob.ols_vmt<-coeftest(ols_vmt,function(x){cluster.vcov(x, data_vmt$state)})
+rob.ols_vmt
+```
+```{r}
+### After June 2020
+data_vmt_af<-data_vmt[data_vmt$date>as.Date('2020-06-01'),]
+
+ols_vmt_af<-lm(vmt_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt_af)
+
+rob.ols_vmt_af<-coeftest(ols_vmt_af,function(x){cluster.vcov(x, data_vmt_af$state)})
+rob.ols_vmt_af
+```
+
+# 1.3 first-stage 2SLS regression
+```{r}
+st_state1<-lm(onsite_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt)
+rob.st_state1<-coeftest(st_state1,vcov = vcovHC(st_state1,type = "HC3"))
+
+summary(st_state1)$r.squared
+st_state1_pred<-st_state1$fitted.values
+data_vmt$st1_pred<-st_state1_pred
+```
+```{r}
+# After June 2020
+st_state1_af<-lm(onsite_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt_af)
+rob.st_state1_af<-coeftest(st_state1_af,vcov = vcovHC(st_state1_af,type = "HC3"))
+
+summary(st_state1_af)$r.squared
+st_state1_pred_af<-st_state1_af$fitted.values
+data_vmt_af$st1_pred<-st_state1_pred_af
+```
+
+# 1.4 second-stage 2SLS regression
+```{r}
+# 1.4.1 main
+st2_st_main<-lm(vmt_19pct~st1_pred+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt)
+
+rob.st2_st_main<-coeftest(st2_st_main,vcov = vcovHC(st2_st_main,type = "HC3"))
+
+## After June 2020
+st2_st_main_af<-lm(vmt_19pct~st1_pred+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt_af)
+
+rob.st2_st_main_af<-coeftest(st2_st_main_af,vcov = vcovHC(st2_st_main_af,type = "HC3"))
+
+# 1.4.2 spatial heteogeneity
+st2_st_trans<-lm(vmt_19pct~st1_pred+I(st1_pred*log(transitcommute_pct))+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt)
+
+rob.st2_st_trans<-coeftest(st2_st_trans,vcov = vcovHC(st2_st_trans,type = "HC3"))
+
+## After June 2020
+st2_st_trans_af<-lm(vmt_19pct~st1_pred+I(st1_pred*log(transitcommute_pct))+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt_af)
+
+rob.st2_st_trans_af<-coeftest(st2_st_trans_af,vcov = vcovHC(st2_st_trans_af,type = "HC3"))
+
+
+# 1.4.3 time heteogeneity
+st2_st_time<-lm(vmt_19pct~I(st1_pred*((date>=as.Date('2020-04-01'))&(date<as.Date('2020-07-01'))))+I(st1_pred*((date>=as.Date('2020-07-01'))&(date<as.Date('2020-10-01'))))+I(st1_pred*((date>=as.Date('2020-10-01'))&(date<as.Date('2021-01-01'))))+I(st1_pred*((date>=as.Date('2021-01-01'))&(date<as.Date('2021-04-01'))))+I(st1_pred*((date>=as.Date('2021-04-01'))&(date<as.Date('2021-07-01'))))+I(st1_pred*((date>=as.Date('2021-07-01'))&(date<as.Date('2021-10-01'))))+I(st1_pred*((date>=as.Date('2021-10-01'))&(date<as.Date('2022-01-01'))))+I(st1_pred*((date>=as.Date('2022-01-01'))&(date<as.Date('2022-04-01'))))+I(st1_pred*((date>=as.Date('2022-04-01'))&(date<as.Date('2022-07-01'))))+I(st1_pred*((date>=as.Date('2022-07-01'))&(date<=as.Date('2022-10-01'))))+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt)
+
+rob.st2_st_time<-coeftest(st2_st_time,vcov = vcovHC(st2_st_time,type = "HC3"))
+
+## After June 2020
+st2_st_time_af<-lm(vmt_19pct~I(st1_pred*((date>=as.Date('2020-07-01'))&(date<as.Date('2020-10-01'))))+I(st1_pred*((date>=as.Date('2020-10-01'))&(date<as.Date('2021-01-01'))))+I(st1_pred*((date>=as.Date('2021-01-01'))&(date<as.Date('2021-04-01'))))+I(st1_pred*((date>=as.Date('2021-04-01'))&(date<as.Date('2021-07-01'))))+I(st1_pred*((date>=as.Date('2021-07-01'))&(date<as.Date('2021-10-01'))))+I(st1_pred*((date>=as.Date('2021-10-01'))&(date<as.Date('2022-01-01'))))+I(st1_pred*((date>=as.Date('2022-01-01'))&(date<as.Date('2022-04-01'))))+I(st1_pred*((date>=as.Date('2022-04-01'))&(date<as.Date('2022-07-01'))))+I(st1_pred*((date>=as.Date('2022-07-01'))&(date<=as.Date('2022-10-01'))))+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt_af)
+
+rob.st2_st_time_af<-coeftest(st2_st_time_af,vcov = vcovHC(st2_st_time_af,type = "HC3"))
+
+```
+
+# 1.5 calculate CO2 emissions
+# 1.5.1 load VMT-CO2 data
+```{r}
+co2_df<-read.csv('auxiliary_data/co2_lbs_mile2017.csv')
+co2_df<-co2_df%>%
+  dplyr::select(state,co2_lbs_mile)
+```
+# 1.5.2 calculate CO2 effect for each state
+```{r}
+results_st <- tidy(rob.st2_st_trans)
+results_st
+
+cov_inter<-cluster.vcov(st2_st_trans, data_vmt$state)['st1_pred','I(st1_pred * log(transitcommute_pct))']
+var_main<-cluster.vcov(st2_st_trans, data_vmt$state)['st1_pred','st1_pred']
+var_2<-cluster.vcov(st2_st_trans, data_vmt$state)['I(st1_pred * log(transitcommute_pct))','I(st1_pred * log(transitcommute_pct))']
+
+vmt19_avg<-data_vmt%>%
+  filter(year==2021)%>%
+  group_by(state)%>%
+  dplyr::summarise(vmt19=mean(vmt19))
+```
+```{r}
+df_effect<-data_vmt%>%
+  dplyr::select(state,transitcommute_pct,iv,pop_million)%>%
+  dplyr::group_by(state)%>%
+  dplyr::summarise(transitcommute_pct=mean(transitcommute_pct),iv=mean(iv),pop_million=mean(pop_million))%>%
+  dplyr::left_join(vmt19_avg,by='state')%>%
+  dplyr::mutate(l_trans=log(transitcommute_pct))%>%
+  dplyr::mutate(Coefficient=rob.st2_st_trans['st1_pred','Estimate']+rob.st2_st_trans['I(st1_pred * log(transitcommute_pct))','Estimate']*log(transitcommute_pct))%>%
+  dplyr::mutate(SE=sqrt(var_main+var_2*(log(transitcommute_pct)**2)+2*cov_inter*log(transitcommute_pct)))%>%
+  dplyr::mutate(Coef.low_95=Coefficient-1.96*SE,Coef.high_95=Coefficient+1.96*SE)%>%
+  dplyr::mutate(vmt_effect_mill=Coefficient*vmt19/100,vmt.low_95=Coef.low_95*vmt19/100,vmt.high_95=Coef.high_95*vmt19/100)%>%
+  dplyr::mutate(vmt_p_effect=vmt_effect_mill/pop_million,vmt_p.low_95=vmt.low_95/pop_million,vmt_p.high_95=vmt.high_95/pop_million)%>% #unit: miles
+  dplyr::left_join(co2_df,by='state')%>%
+  dplyr::mutate(co2_effect_mill_lbs=vmt_effect_mill*co2_lbs_mile,co2.low_95=vmt.low_95*co2_lbs_mile,co2.high_95=vmt.high_95*co2_lbs_mile)%>%
+  dplyr::mutate(co2_p=vmt_p_effect*co2_lbs_mile,co2_p.low_95=vmt_p.low_95*co2_lbs_mile,co2_p.high_95=vmt_p.high_95*co2_lbs_mile)%>%
+  dplyr::arrange(desc(co2_p))
+
+df_effect<-df_effect%>%
+  mutate(co2_effect_thous_tons=co2_effect_mill_lbs*1000/2204.62)%>%
+  mutate(co2.low_95_thous_tons=co2.low_95*1000/2204.62,co2.high_95_thous_tons=co2.high_95*1000/2204.62)%>% 
+  mutate(co2_effect_mill_lbs_yr=co2_effect_mill_lbs*12)%>%
+  mutate(co2.low_95_mill_lbs_yr=co2.low_95*12,co2.high_95_mill_lbs_yr=co2.high_95*12)%>%
+  mutate(co2_effect_mill_tons_yr=co2_effect_mill_lbs_yr/2204.62)%>%
+  mutate(co2.low_95_mill_tons_yr=co2.low_95_mill_lbs_yr/2204.62,co2.high_95_mill_tons_yr=co2.high_95_mill_lbs_yr/2204.62)%>%
+  mutate(co2_p_yr=co2_p*12)%>%
+  mutate(co2_p.low_95_yr=co2_p.low_95*12,co2_p.high_95_yr=co2_p.high_95*12)
+
+```
+
+# 1.5.3 plot CO2 effect for each state
+```{r}
+df_effect %>%
+  mutate(state = fct_reorder(state, co2_effect_thous_tons))%>%
+ggplot(aes(x = state, y = co2_effect_thous_tons)) +
+        geom_hline(yintercept = 0,
+                   colour = gray(1/2), lty = 2) +
+        geom_bar(stat="identity",fill='steelblue4') +
+        geom_linerange(aes(x = state,
+                     ymin = co2.low_95_thous_tons,
+                     ymax = co2.high_95_thous_tons),
+                   lwd = 0.7,position = position_dodge(width = 0),color='orange2')+
+  geom_text(aes(label = round(co2_effect_thous_tons,1)),hjust = -0.5,size = 7) +
+        coord_flip()+
+    labs(y=bquote('Effect on monthly' ~CO[2]*' emissions (thousand metric tons)'))+
+  labs(x="State")+
+  theme(legend.key=element_blank(),
+        axis.ticks=element_blank(),
+        axis.text.x=element_text(size=20,family="Arial"),
+        axis.text.y=element_text(size=20,family="Arial"),
+        axis.title=element_text( size=25, family="Arial"),
+        axis.title.y = element_text(margin = margin(r = 12)),
+        axis.title.x = element_text(margin = margin(t = 10)),
+        legend.text=element_text(size=20, family="Arial",margin = margin(t = 7)),
+        panel.background=element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA),
+        panel.grid.major.x = element_line(colour = "lightgrey"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_line(colour = "lightgrey"),
+        panel.grid.minor.y = element_blank(),
+        # panel.grid.minor = element_line(colour = "lightgrey"),
+        legend.box.background = element_rect(colour = "black"),
+        text = element_text(size = 20),
+        plot.margin = margin(t = 0.5,  # Top margin
+                             r = 0.5,  # Right margin
+                             b = 0.2,  # Bottom margin
+                             l = 0.2, "cm"))
+# ggsave('plots/co2_vmt.png', dpi = 800, width = 12, height = 16, units = "in")
+```
+# 1.5.4 calculate the aggregate CO2 effect
+```{r}
+total_us_co2=1939.46-11.9-12.3
+
+##VMT-related CO2 (yearly)
+vmt_co2_19=sum(df_effect$vmt19*df_effect$co2_lbs_mile)*12
+
+##use official transport-sector emission as the baseline
+co2_sum=sum(df_effect$co2_effect_mill_lbs)*12/2204.62 #MtCO2
+
+print(paste0('1% increase in remote work will cause reduction in annual CO2 emission: ',round(co2_sum,2),' million metric tons, ',round(co2_sum*100/total_us_co2,2),'% of the 2019 level'))
+```
+
+# 1.6 plot the coefficient for each state
+```{r}
+df_effect %>%
+  mutate(state = fct_reorder(state, Coefficient))%>%
+ggplot(aes(x = state, y = Coefficient)) +
+        geom_hline(yintercept = 0,
+                   colour = gray(1/2), lty = 2) +
+        geom_point(aes(x = state,
+                    y = Coefficient),position = position_dodge(width = 0),size=3) +
+        geom_linerange(aes(x = state,
+                     ymin = Coef.low_95,
+                     ymax = Coef.high_95),
+                   lwd = 1,position = position_dodge(width = 0)) +
+        coord_flip()+
+  labs(x="State")+
+  theme(legend.key=element_blank(),
+        axis.ticks=element_blank(),
+        axis.text.x=element_text(size=20,family="Arial"), 
+        axis.text.y=element_text(size=20,family="Arial"), 
+        axis.title=element_text( size=25, family="Arial"),
+        axis.title.y = element_text(margin = margin(r = 12)),
+        axis.title.x = element_text(margin = margin(t = 10)),
+        legend.text=element_text(size=20, family="Arial",margin = margin(t = 7)), 
+        panel.background=element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA),
+        panel.grid.major.x = element_line(colour = "lightgrey"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_line(colour = "lightgrey"),
+        panel.grid.minor.y = element_blank(),
+        # panel.grid.minor = element_line(colour = "lightgrey"),
+        legend.box.background = element_rect(colour = "black"),
+        text = element_text(size = 20),
+        plot.margin = margin(t = 0.5,  # Top margin
+                             r = 0.5,  # Right margin
+                             b = 0.2,  # Bottom margin
+                             l = 0.2, "cm"))
+# ggsave('plots/coef_vmt.png', dpi = 800, width = 12, height = 16, units = "in")
+```
+
+
+# 2. Transit model
+# 2.1 load data
+```{r}
+end_date<-'2022-11-01'
+data_trans0<-read.csv('data_processed/data_transit.csv')
+data_trans0$date<-as.Date(data_trans0$date)
+data_trans0$month<-month(data_trans0$date)
+data_trans0$year<-year(data_trans0$date)
+data_trans<-data_trans0%>%
+  filter((date>as.Date('2020-03-01'))&(date<as.Date(end_date)))%>%
+  filter(!is.na(onsite_pct))
+
+```
+
+# 2.2 fixed-effects regression
+```{r}
+ols_trans<-lm(ridership_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans)
+summary(ols_trans)
+rob.ols_trans<-coeftest(ols_trans,vcov = vcovHC(ols_trans,type = "HC3"))
+rob.ols_trans
+
+### After June 2020
+data_trans_af<-data_trans[data_trans$date>as.Date('2020-06-01'),]
+
+ols_trans_af<-lm(ridership_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans_af)
+
+rob.ols_trans_af<-coeftest(ols_trans_af,vcov = vcovHC(ols_trans_af,type = "HC3"))
+rob.ols_trans_af
+
+```
+# 2.3 first-stage 2SLS regression
+```{r}
+st_trans1<-lm(onsite_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans)
+
+summary(st_trans1)$r.squared
+st_trans1_pred<-st_trans1$fitted.values
+data_trans$st1_pred<-st_trans1_pred
+
+rob.st_trans1<-coeftest(st_trans1,vcov = vcovHC(st_trans1,type = "HC3"))
+```
+```{r}
+#After June 2020
+st_trans1_af<-lm(onsite_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans_af)
+
+summary(st_trans1_af)$r.squared
+st_trans1_pred_af<-st_trans1_af$fitted.values
+data_trans_af$st1_pred<-st_trans1_pred_af
+
+rob.st_trans1_af<-coeftest(st_trans1_af,vcov = vcovHC(st_trans1_af,type = "HC3"))
+
+```
+
+# 2.4 second-stage 2SLS regression
+```{r}
+# 2.4.1 main
+st2_trans<-lm(ridership_19pct~st1_pred+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans)
+rob.st2_trans<-coeftest(st2_trans,vcov = vcovHC(st2_trans,type = "HC3"))
+
+# After June 2020
+st2_trans_af<-lm(ridership_19pct~st1_pred+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans_af)
+rob.st2_trans_af<-coeftest(st2_trans_af,vcov = vcovHC(st2_trans_af,type = "HC3"))
+
+
+# 2.4.1 spatial heteogeneity
+st2_trans_trans<-lm(ridership_19pct~st1_pred+I(st1_pred*log(transitcommute_pct))+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans)
+
+rob.st2_trans_trans<-coeftest(st2_trans_trans,vcov = vcovHC(st2_trans_trans,type = "HC3"))
+
+# 2.4.2 time heteogeneity
+st2_trans_time<-lm(ridership_19pct~I(st1_pred*((date>=as.Date('2020-04-01'))&(date<as.Date('2020-07-01'))))+I(st1_pred*((date>=as.Date('2020-07-01'))&(date<as.Date('2020-10-01'))))+I(st1_pred*((date>=as.Date('2020-10-01'))&(date<as.Date('2021-01-01'))))+I(st1_pred*((date>=as.Date('2021-01-01'))&(date<as.Date('2021-04-01'))))+I(st1_pred*((date>=as.Date('2021-04-01'))&(date<as.Date('2021-07-01'))))+I(st1_pred*((date>=as.Date('2021-07-01'))&(date<as.Date('2021-10-01'))))+I(st1_pred*((date>=as.Date('2021-10-01'))&(date<as.Date('2022-01-01'))))+I(st1_pred*((date>=as.Date('2022-01-01'))&(date<as.Date('2022-04-01'))))+I(st1_pred*((date>=as.Date('2022-04-01'))&(date<as.Date('2022-07-01'))))+I(st1_pred*((date>=as.Date('2022-07-01'))&(date<=as.Date('2022-10-01'))))+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans)
+
+rob.st2_trans_time<-coeftest(st2_trans_time,vcov = vcovHC(st2_trans_time,type = "HC3"))
+
+# After June 2020
+st2_trans_time_af<-lm(ridership_19pct~I(st1_pred*((date>=as.Date('2020-07-01'))&(date<as.Date('2020-10-01'))))+I(st1_pred*((date>=as.Date('2020-10-01'))&(date<as.Date('2021-01-01'))))+I(st1_pred*((date>=as.Date('2021-01-01'))&(date<as.Date('2021-04-01'))))+I(st1_pred*((date>=as.Date('2021-04-01'))&(date<as.Date('2021-07-01'))))+I(st1_pred*((date>=as.Date('2021-07-01'))&(date<as.Date('2021-10-01'))))+I(st1_pred*((date>=as.Date('2021-10-01'))&(date<as.Date('2022-01-01'))))+I(st1_pred*((date>=as.Date('2022-01-01'))&(date<as.Date('2022-04-01'))))+I(st1_pred*((date>=as.Date('2022-04-01'))&(date<as.Date('2022-07-01'))))+I(st1_pred*((date>=as.Date('2022-07-01'))&(date<=as.Date('2022-10-01'))))+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans_af)
+
+rob.st2_trans_time_af<-coeftest(st2_trans_time_af,vcov = vcovHC(st2_trans_time_af,type = "HC3"))
+```
+```{r}
+top_msa_df<-read.csv('data_processed/top_msa_df.csv')
+
+data_trans2<-data_trans%>%
+  left_join(top_msa_df,by='MSA.Code')
+
+```
+
+
+# 2.5 calculate the effects on transit fares
+```{r}
+fare<-read.csv('auxiliary_data/fare.csv')
+
+results_trans<- tidy(rob.st2_trans_trans)
+
+cov_inter<-cluster.vcov(st2_trans_trans, data_trans$MSA.Code)['st1_pred','I(st1_pred * log(transitcommute_pct))']
+var_main<-cluster.vcov(st2_trans_trans, data_trans$MSA.Code)['st1_pred','st1_pred']
+var_2<-cluster.vcov(st2_trans_trans, data_trans$MSA.Code)['I(st1_pred * log(transitcommute_pct))','I(st1_pred * log(transitcommute_pct))']
+
+trans19_avg<-data_trans%>%
+  filter(year==2021)%>%
+  group_by(MSA.Code)%>%
+  dplyr::summarise(ridership2019=mean(ridership2019))%>%
+  left_join(fare,by='MSA.Code')%>%
+  dplyr::mutate(fare_rev19=ridership2019*fare)%>%
+  dplyr::select(-fare)
+
+
+df_effect_trans<-data_trans2%>%
+  # filter(!is.na(MSA.Name))%>%
+  filter(date==as.Date('2020-04-01'))%>%
+  dplyr::select(MSA.Title,MSA.Name,MSA.Code,transitcommute_pct)%>%
+  dplyr::left_join(trans19_avg,by='MSA.Code')%>%
+  dplyr::mutate(Coefficient=rob.st2_trans_trans['st1_pred','Estimate']+rob.st2_trans_trans['I(st1_pred * log(transitcommute_pct))','Estimate']*log(transitcommute_pct))%>%
+  dplyr::mutate(SE=sqrt(var_main+var_2*(log(transitcommute_pct)**2)+2*cov_inter*log(transitcommute_pct)))%>%
+  dplyr::mutate(Coef.low_95=Coefficient-1.96*SE,Coef.high_95=Coefficient+1.96*SE)%>%
+  dplyr::mutate(trans_effect=Coefficient*ridership2019/100,trans.low_95=Coef.low_95*ridership2019/100,trans.high_95=Coef.high_95*ridership2019/100)%>%
+  dplyr::left_join(fare,by='MSA.Code')%>%
+  dplyr::mutate(fare_effect=trans_effect*fare,fare.low_95=trans.low_95*fare,fare.high_95=trans.high_95*fare)
+
+df_effect_trans2<-df_effect_trans %>%
+  dplyr::filter(!is.na(MSA.Name))
+
+df_effect_trans2
+```
+
+
+```{r}
+factor=100000
+df_plt<-df_effect_trans2%>%
+  arrange(desc(trans_effect))
+first_low_bound<-round(df_plt[1,'fare.low_95']/factor)-1
+scale_intercept<-round(df_plt[2,'fare.high_95']/factor+3-first_low_bound/10)
+
+trans <- function(x) {
+  ifelse(x > first_low_bound, x/10+scale_intercept, x)
+}
+inv <- function(x) {
+  ifelse(x > first_low_bound/10+scale_intercept, (x-scale_intercept)*10, x)
+}
+my_trans <- trans_new("my_trans", trans,inv)
+```
+
+
+# 2.5.2 plot the effects on transit fares
+```{r}
+df_effect_trans2 %>%
+  mutate(MSA.Name = fct_reorder(MSA.Name, fare_effect))%>%
+  # filter(MSA.Name!='New York NY')%>%
+ggplot(aes(x = MSA.Name, y = fare_effect/factor)) +
+        geom_hline(yintercept = 0,
+                   colour = gray(1/2), lty = 2) +
+        geom_bar(stat="identity",fill="mediumpurple4") +
+        geom_linerange(aes(x = MSA.Name, 
+                     ymin = fare.low_95/factor,
+                     ymax = fare.high_95/factor),
+                   lwd = 1/2,position = position_dodge(width = 0),color='orange2')+
+  geom_text(aes(label = round(fare_effect/factor,2)),hjust = -0.5,size = 7)+ scale_y_continuous(trans = my_trans,breaks = c(seq(0,round(df_plt[2,'fare.high_95']/factor)+1,2),first_low_bound+1,round(df_plt[1,'fare_effect']/factor),round(df_plt[1,'fare.high_95']/factor)))+
+  coord_flip()+
+    labs(y=bquote('Effect on monthly transit fare revenue (in $100,000)'))+
+  labs(x="MSA")+
+  theme(legend.key=element_blank(),
+        axis.ticks=element_blank(),
+        axis.text.x=element_text(size=20,family="Arial"), 
+        axis.text.y=element_text(size=20,family="Arial"), 
+        axis.title=element_text( size=25, family="Arial"),
+        axis.title.y = element_text(margin = margin(r = 12,l=10)),
+        axis.title.x = element_text(margin = margin(t = 10)),
+        legend.text=element_text(size=20, family="Arial",margin = margin(t = 7)), 
+        panel.background=element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA),
+        panel.grid.major.x = element_line(colour = "lightgrey"),
+        panel.grid.major.y = element_blank(),
+        legend.box.background = element_rect(colour = "black"),
+        text = element_text(size = 20),
+        plot.margin = margin(t = 0.5,  # Top margin
+                             r = 0.5,  # Right margin
+                             b = 0.2,  # Bottom margin
+                             l = 0, "cm"))
+ggsave('plots/effect_trans_fare.png', dpi = 800, width = 15, height = 16, units = "in")
+```
+
+
+```{r}
+rider_loss=round(sum(df_effect_trans$trans_effect)*12/1000000000,2)
+fare_loss=round(sum(df_effect_trans$fare_effect)*12/1000000000,2)
+rider_19=sum(trans19_avg$ridership2019)*12/1000000000 #billion
+fare_19=sum(trans19_avg$fare_rev19)*12/1000000000 #billion
+
+print(paste0('1% increase in remote work will cause annual transit ridership loss: ',rider_loss,' billion,',round(rider_loss*100/rider_19,2),'%'))
+
+print(paste0('1% increase in remote work will cause annual transit fare revenue loss: ',fare_loss,' billion,',round(fare_loss*100/fare_19,2),'%'))
+
+ny_fare_loss=round(df_effect_trans2[df_effect_trans2$MSA.Name=='New York NY','fare_effect']*12/1000000000,2)
+ny_fare_month_loss=round(df_effect_trans2[df_effect_trans2$MSA.Name=='New York NY','fare_effect']/1000000,2)
+print(paste0('1% increase in remote work will cause NY fare revenue loss (annual): ',ny_fare_loss,' billion, which is the % of total: ',round(ny_fare_loss*100/fare_loss,2),'%'))
+print(paste0('1% increase in remote work will cause NY fare revenue loss (monthly): ',ny_fare_month_loss,' million, which is the % of total: ',round(ny_fare_loss*100/fare_loss,2),'%'))
+```
+
+
+# 2.5.3 plot the model coefficient for each MSA
+```{r}
+df_effect_trans2 %>%
+  mutate(MSA.Name = fct_reorder(MSA.Name, Coefficient))%>%
+ggplot(aes(x = MSA.Name, y = Coefficient)) +
+        geom_hline(yintercept = 0,
+                   colour = gray(1/2), lty = 2) +
+        geom_point(aes(x = MSA.Name,
+                    y = Coefficient),position = position_dodge(width = 0),size=3) +
+        geom_linerange(aes(x = MSA.Name,
+                     ymin = Coef.low_95,
+                     ymax = Coef.high_95),
+                   lwd = 1,position = position_dodge(width = 0)) +
+        coord_flip()+
+  labs(x="MSA")+
+  theme(legend.key=element_blank(),
+        axis.ticks=element_blank(),
+        axis.text.x=element_text(size=20,family="Arial"), 
+        axis.text.y=element_text(size=20,family="Arial"), 
+        axis.title=element_text( size=25, family="Arial"),
+        axis.title.y = element_text(margin = margin(r = 12)),
+        axis.title.x = element_text(margin = margin(t = 10)),
+        legend.text=element_text(size=20, family="Arial",margin = margin(t = 7)), 
+        panel.background=element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA),
+        panel.grid.major.x = element_line(colour = "lightgrey"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_line(colour = "lightgrey"),
+        panel.grid.minor.y = element_blank(),
+        # panel.grid.minor = element_line(colour = "lightgrey"),
+        legend.box.background = element_rect(colour = "black"),
+        text = element_text(size = 20),
+        plot.margin = margin(t = 0.5,  # Top margin
+                             r = 0.5,  # Right margin
+                             b = 0.2,  # Bottom margin
+                             l = 0.2, "cm"))
+ggsave('plots/coef_trans.png', dpi = 800, width = 12, height = 16, units = "in")
+```
+
+# 3 Summarize modeling results
+# 3.1 Summarize the second stage results
+```{r}
+stargazer(ols_vmt,st2_st_main,st2_st_trans,ols_trans,st2_trans,st2_trans_trans,se = list(rob.ols_vmt[,"Std. Error"],rob.st2_st_main[,"Std. Error"],rob.st2_st_trans[,"Std. Error"],rob.ols_trans[,"Std. Error"],rob.st2_trans[,"Std. Error"],rob.st2_trans_trans[,"Std. Error"]))
+```
+```{r}
+#After June 2020
+stargazer(ols_vmt_af,st2_st_main_af,ols_trans_af,st2_trans_af,se = list(rob.ols_vmt_af[,"Std. Error"],rob.st2_st_main_af[,"Std. Error"],rob.ols_trans_af[,"Std. Error"],rob.st2_trans_af[,"Std. Error"]))
+```
+
+# 3.2 Summarize the first stage results
+```{r}
+stargazer(st_state1,st_trans1,se = list(rob.st_state1[,"Std. Error"],rob.st_trans1[,"Std. Error"]))
+```
+```{r}
+#After June 2020
+stargazer(st_state1_af,st_trans1_af,se = list(rob.st_state1_af[,"Std. Error"],rob.st_trans1_af[,"Std. Error"]))
+```
+
+# 3.3 Robustness test
+```{r}
+data_vmt_avg<-data_vmt%>%
+  group_by(state)%>%
+  dplyr::summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)))
+
+data_trans_avg<-data_trans%>%
+  group_by(MSA.Code)%>%
+  dplyr::summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)))
+
+alt_vmt_1<-lm(transitcommute_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+vaccine_p_1000+vrm_19pct+net_mig_rate+pop_million,data=data_vmt_avg)
+rob.alt_vmt_1<-coeftest(alt_vmt_1,vcov = vcovHC(alt_vmt_1,type = "HC3"))
+
+alt_vmt_2<-lm(noveh_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+vaccine_p_1000+vrm_19pct+net_mig_rate+pop_million,data=data_vmt_avg)
+rob.alt_vmt_2<-coeftest(alt_vmt_2,vcov = vcovHC(alt_vmt_2,type = "HC3"))
+
+alt_trans_1<-lm(transitcommute_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+vaccine_p_1000+vrm_19pct+net_mig_rate+pop_million,data=data_trans_avg)
+
+rob.alt_trans_1<-coeftest(alt_trans_1,vcov = vcovHC(alt_trans_1,type = "HC3"))
+
+alt_trans_2<-lm(noveh_pct~iv+reopened+gdp_p_in1000+UR+cases_p_1000+vaccine_p_1000+vrm_19pct+net_mig_rate+pop_million,data=data_trans_avg)
+rob.alt_trans_2<-coeftest(alt_trans_2,vcov = vcovHC(alt_trans_2,type = "HC3"))
+
+stargazer(alt_vmt_1,alt_vmt_2,alt_trans_1,alt_trans_2,se = list(rob.alt_vmt_1[,"Std. Error"],rob.alt_vmt_2[,"Std. Error"],rob.alt_trans_1[,"Std. Error"],rob.alt_trans_2[,"Std. Error"]))
+
+```
+
+# 4. Plot time-varying effects
+# 4.1 Summarize main effects by time
+```{r}
+library(zoo)
+########### VMT
+results_vmt <- tidy(rob.st2_st_time)
+results_vmt2<-results_vmt%>%
+           dplyr::rename(Variable = term,
+                  Coefficient = estimate,
+                  SE = std.error) %>% dplyr::select(-statistic,
+                              -p.value)%>%
+  mutate(conf.low_95=Coefficient-1.645*SE,conf.high_95=Coefficient+1.645*SE)
+
+from <- as.Date('2020-04-01')
+to <- as.Date('2022-09-01')
+
+results_vmt3<-results_vmt2[2:11,]
+results_vmt3$yq<-seq(as.yearqtr(from), as.yearqtr(to), by = 1/4)
+results_vmt3$type<-'VMT'
+
+
+########### transit
+results_trans <- tidy(rob.st2_trans_time)
+results_trans2<-results_trans%>%
+           dplyr::rename(Variable = term,
+                  Coefficient = estimate,
+                  SE = std.error) %>% dplyr::select(-statistic,
+                              -p.value)%>%
+  mutate(conf.low_95=Coefficient-1.645*SE,conf.high_95=Coefficient+1.645*SE)
+
+from <- as.Date('2020-04-01')
+to <- as.Date('2022-09-01')
+
+results_trans3<-results_trans2[2:11,]
+results_trans3$yq<-seq(as.yearqtr(from), as.yearqtr(to), by = 1/4)
+results_trans3$type<-'Transit ridership'
+
+results_time_full<-rbind(results_trans3,results_vmt3)
+results_time_full$type=factor(results_time_full$type,levels=c('Transit ridership','VMT'))
+```
+
+```{r}
+results_time_vmt_trans<-results_time_full%>%
+  filter(type%in%c('VMT', 'Transit ridership'))
+results_time_vmt_trans
+```
+# 4.2 Plot time-varying effects
+```{r}
+ggplot(data=results_time_vmt_trans,aes(x = yq, 
+                    y = Coefficient,group=type,color=type,shape=type))+ geom_smooth(method=lm,size=0.7,linetype='dashed',se=F)+
+        geom_point(position=position_dodge(width = 0.1),size=3,stroke=1) + 
+          geom_line(position=position_dodge(width = 0.1),lwd = 0.7) +
+        geom_linerange(aes(x = yq,
+                     ymin = conf.low_95,
+                     ymax = conf.high_95),alpha=0.7,
+                   lwd = 0.5,position=position_dodge(width = 0.1))+
+scale_color_manual('',values=c("#F8766D","#00BA38"),labels=c('VMT', 'Transit ridership'),breaks=c('VMT', 'Transit ridership'))+
+  scale_shape_manual('',values = c(0, 1),labels=c('VMT', 'Transit ridership'),breaks=c('VMT', 'Transit ridership'))+
+   geom_hline(yintercept= 0,linetype='dashed')+
+  zoo::scale_x_yearqtr(breaks = seq(from = min(results_time_full$yq), to = max(results_time_full$yq), by = 0.25),format = '%Y \nQ%q')+
+  labs(x="")+
+  theme(legend.position = c(0.6, 0.2))+
+  theme(legend.key=element_blank(),
+        # axis.ticks=element_blank(),
+        axis.ticks.length=unit(.25, "cm"),
+        axis.text=element_text(size=20,family="Arial"), 
+        axis.text.x = element_text(vjust = 0.5, hjust=0.5),
+        axis.title.y = element_text(size=25, family="Arial",margin = margin(r = 12)),
+        axis.title.y.right = element_text(size=25, family="Arial",margin = margin(l = 12)),
+        legend.box.background = element_rect(fill="transparent",colour=NA),
+        legend.background = element_rect(fill='transparent'),
+        legend.text=element_text(size=20, family="Arial",margin = margin(t = 3)), 
+        panel.background=element_blank(),
+        panel.border = element_rect(colour = 'black', fill=NA),
+        panel.grid.major = element_line(colour = "lightgrey"), 
+        panel.grid.minor = element_line(colour = "lightgrey"),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        # legend.box.background = element_rect(colour = "black"),
+        text = element_text(size = 20),
+        plot.margin = margin(t = 0.5,  # Top margin
+                             r = 1,  # Right margin
+                             b = 0,  # Bottom margin
+                             l = 0.5, "cm"))
+# ggsave('plots/effect_time_vmt_trans.png', dpi = 800, width = 10, height = 7, units = "in")
+```
+
+
+###Model Tests
+#5.1 FE F-test
+```{r}
+wi_vmt <- lm(vmt_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+factor(state)+factor(month),data=data_vmt)
+re_vmt <- lm(vmt_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate,data=data_vmt)
+
+wi_trans <- lm(ridership_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+factor(MSA.Code)+factor(month),data=data_trans)
+re_trans <- lm(ridership_19pct~onsite_pct+reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate,data=data_trans)
+
+phtest_new <- function (fem, rem, ...)  {  ## changed function call
+    coef.wi <- coef(fem)
+    coef.re <- coef(rem)  ## changed coef() to fixef() for glmer
+    vcov.wi <- vcov(fem)
+    vcov.re <- vcov(rem)
+    names.wi <- names(coef.wi)
+    names.re <- names(coef.re)
+    coef.h <- names.re[names.re %in% names.wi]
+    dbeta <- coef.wi[coef.h] - coef.re[coef.h]
+    df <- length(dbeta)
+    dvcov <- vcov.re[coef.h, coef.h] - vcov.wi[coef.h, coef.h]
+    stat <- abs(t(dbeta) %*% as.matrix(solve(dvcov)) %*% dbeta)  ## added as.matrix()
+    pval <- pchisq(stat, df = df, lower.tail = FALSE)
+    names(stat) <- "chisq"
+    parameter <- df
+    names(parameter) <- "df"
+    alternative <- "one model is inconsistent"
+    res <- list(statistic = stat, p.value = pval, parameter = parameter, 
+        method = "Hausman Test",  alternative = alternative,
+                data.name=deparse(getCall(fem)$data))  ## changed
+    class(res) <- "htest"
+    return(res)
+}
+
+phtest_vmt<-phtest_new(wi_vmt,re_vmt)
+phtest_trans<-phtest_new(wi_trans,re_trans)
+```
+
+
+
+# First-stage F stats
+```{r}
+fs_vmt = st_state1
+fn_vmt=lm(onsite_pct~reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(state)+factor(month),data=data_vmt)
+
+###
+fs_trans = st_trans1
+fn_trans=lm(onsite_pct~reopened+gdp_p_in1000+UR+cases_p_1000+dose_p_lag3+dose_p_lag3_6+dose_p_lag6_9+vrm_19pct+net_mig_rate+pop_million+factor(MSA.Code)+factor(month),data=data_trans)
+
+wald_vmt<-lmtest::waldtest(fs_vmt, fn_vmt, vcov = vcovHC(fs_vmt,type = "HC3"))
+wald_trans<-lmtest::waldtest(fs_trans, fn_trans, vcov = vcovHC(fs_trans,type = "HC3"))
+
+wald_vmt
+wald_trans
+```
+
